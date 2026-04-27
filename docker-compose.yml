@@ -1,0 +1,115 @@
+services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --entrypoints.web.address=:80
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
+    ports:
+      - "8080:80"
+      - "8087:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - app-net
+
+  orders-db:
+   image: postgres:16-alpine
+   environment:
+     POSTGRES_DB: orders_db
+     POSTGRES_USER: demo
+     POSTGRES_PASSWORD: demo
+   healthcheck:
+     test: [ "CMD-SHELL", "pg_isready -U demo -d orders_db"]
+     interval: 5s
+     timeout: 5s
+     retries: 10
+   networks: 
+     - app-net
+
+  products-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: products_db
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U demo -d products_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5674:5672"
+      - "15674:15672"
+    networks:
+      - app-net
+  
+  orders:
+    build: ./orders-microservice
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8085:8082"
+    depends_on:
+      - orders-db
+      - rabbitmq
+    networks:
+      - app-net
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.orders.entrypoints=web
+      - traefik.http.routers.orders.rule=PathPrefix(`/order-api`)
+      - traefik.http.routers.orders.priority=20
+      - traefik.http.routers.orders.service=orders
+      - traefik.http.routers.orders.middlewares=orders-stripprefix@docker
+      - traefik.http.services.orders.loadbalancer.server.port=8082
+      - traefik.http.middlewares.orders-stripprefix.stripprefix.prefixes=/order-api
+  
+  products:
+    build: ./product-microservice
+    environment: 
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8086:8081"
+    depends_on:
+      - products-db
+      - rabbitmq
+    networks:
+      - app-net
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.product.entrypoints=web
+      - traefik.http.routers.product.rule=PathPrefix(`/product-api`)
+      - traefik.http.routers.product.priority=20
+      - traefik.http.routers.product.service=product
+      - traefik.http.routers.product.middlewares=product-stripprefix@docker
+      - traefik.http.services.product.loadbalancer.server.port=8081
+      - traefik.http.middlewares.product-stripprefix.stripprefix.prefixes=/product-api
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - orders
+      - products
+    networks:
+      - app-net
+    ports: 
+      - "8083:80"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.frontend.entrypoints=web
+      - traefik.http.routers.frontend.rule=PathPrefix(`/`)
+      - traefik.http.routers.frontend.priority=1
+      - traefik.http.routers.frontend.service=frontend
+      - traefik.http.services.frontend.loadbalancer.server.port=80
+
+networks:
+   app-net:
+     driver: bridge
